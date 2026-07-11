@@ -1,4 +1,4 @@
 interface:
   display_name: "WeChat Stickers"
-  short_description: "Build WeChat sticker packs and assets"
-  default_prompt: "Use $wechat-stickers to create a WeChat sticker pack from my character idea."
+  short_description: "Design meme-aware WeChat sticker packs"
+  default_prompt: "Use $wechat-stickers to design a socially sendable WeChat sticker pack from my character or theme."

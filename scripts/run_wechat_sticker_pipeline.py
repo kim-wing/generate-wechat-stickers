@@ -87,6 +87,29 @@ NEGATION_MARKERS = (
     "避免",
     "无",
 )
+CREATIVE_DIRECTION_FIELDS = ("target_audience", "relationship_context", "conversation_register")
+PERSONA_FIELDS = ("core", "worldview", "social_posture", "signature_reaction", "visual_hook")
+CREATIVE_STICKER_FIELDS = (
+    "trigger_utterance",
+    "surface_message",
+    "hidden_emotion",
+    "social_move",
+    "meme_mechanism",
+    "visual_hook",
+    "punchline_frame",
+    "use_case",
+    "portfolio_role",
+)
+CREATIVE_SCORE_WEIGHTS = {
+    "context_fit": 2,
+    "emotional_precision": 1,
+    "persona_fit": 1,
+    "visual_hook": 1,
+    "surprise": 1,
+    "sendability": 2,
+    "social_safety": 1,
+}
+CREATIVE_MIN_WEIGHTED_SCORE = 32
 
 
 def now() -> str:
@@ -210,6 +233,176 @@ def contains_restricted_text(value: Any) -> list[str]:
     return found
 
 
+def is_present(value: Any) -> bool:
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, (list, dict)):
+        return bool(value)
+    return value is not None
+
+
+def default_portfolio(count: int) -> dict[str, int]:
+    return {
+        1: {"utility": 1, "persona": 0, "wildcard": 0},
+        8: {"utility": 4, "persona": 3, "wildcard": 1},
+        16: {"utility": 8, "persona": 5, "wildcard": 3},
+        24: {"utility": 12, "persona": 8, "wildcard": 4},
+    }.get(count, {"utility": count, "persona": 0, "wildcard": 0})
+
+
+def portfolio_roles(count: int) -> list[str]:
+    portfolio = default_portfolio(count)
+    return [
+        *(["utility"] * portfolio["utility"]),
+        *(["persona"] * portfolio["persona"]),
+        *(["wildcard"] * portfolio["wildcard"]),
+    ]
+
+
+def creative_plan_report(plan: dict[str, Any]) -> dict[str, Any]:
+    errors: list[str] = []
+    warnings: list[str] = []
+    results: list[dict[str, Any]] = []
+    direction = plan.get("creative_direction")
+    if not isinstance(direction, dict):
+        direction = {}
+        errors.append("creative_direction must be an object")
+    for field in CREATIVE_DIRECTION_FIELDS:
+        if not is_present(direction.get(field)):
+            errors.append(f"creative_direction.{field} is required")
+
+    persona = direction.get("persona") if isinstance(direction.get("persona"), dict) else {}
+    if not persona:
+        errors.append("creative_direction.persona must be an object")
+    for field in PERSONA_FIELDS:
+        if not is_present(persona.get(field)):
+            errors.append(f"creative_direction.persona.{field} is required")
+    fingerprint = persona.get("verbal_fingerprint")
+    if not isinstance(fingerprint, list) or len([item for item in fingerprint if is_present(item)]) < 3:
+        errors.append("creative_direction.persona.verbal_fingerprint needs at least 3 phrases")
+
+    count = int(plan.get("count", 0))
+    portfolio = direction.get("portfolio") if isinstance(direction.get("portfolio"), dict) else {}
+    declared_total = sum(int(portfolio.get(role, 0) or 0) for role in ("utility", "persona", "wildcard"))
+    if declared_total != count:
+        errors.append(f"creative_direction.portfolio totals {declared_total}, expected {count}")
+    if count > 1 and int(portfolio.get("persona", 0) or 0) < 1:
+        errors.append("album portfolio needs at least one persona sticker")
+    if count > 1 and int(portfolio.get("wildcard", 0) or 0) < 1:
+        errors.append("album portfolio needs at least one wildcard sticker")
+
+    signatures: dict[str, str] = {}
+    role_counts = {"utility": 0, "persona": 0, "wildcard": 0}
+    anchors: list[tuple[str, str]] = []
+    for index, sticker in sticker_map(plan).items():
+        for field in CREATIVE_STICKER_FIELDS:
+            if not is_present(sticker.get(field)):
+                errors.append(f"{index} {field} is required")
+
+        role = str(sticker.get("portfolio_role") or "")
+        if role not in role_counts:
+            errors.append(f"{index} invalid portfolio_role: {role}")
+        else:
+            role_counts[role] += 1
+
+        candidates = sticker.get("concept_candidates")
+        if not isinstance(candidates, list) or not candidates:
+            candidates = []
+            errors.append(f"{index} concept_candidates needs at least one concept")
+        valid_candidates = [item for item in candidates if isinstance(item, dict)]
+        if len(valid_candidates) != len(candidates):
+            errors.append(f"{index} every concept candidate must be an object")
+        for candidate in valid_candidates:
+            for field in ("concept_id", "meme_mechanism", "visual_hook"):
+                if not is_present(candidate.get(field)):
+                    errors.append(f"{index} concept candidate {field} is required")
+        candidate_ids = [str(item.get("concept_id") or "") for item in valid_candidates]
+        if any(not value for value in candidate_ids) or len(candidate_ids) != len(set(candidate_ids)):
+            errors.append(f"{index} concept candidate ids must be present and unique")
+        selected = str(sticker.get("selected_concept_id") or "")
+        if not selected or selected not in candidate_ids:
+            errors.append(f"{index} selected_concept_id must match a concept candidate")
+        if not is_present(sticker.get("selection_reason")):
+            errors.append(f"{index} selection_reason is required")
+        if sticker.get("concept_tournament_anchor"):
+            anchors.append((index, role))
+            if len(candidates) < 3:
+                errors.append(f"{index} tournament anchor needs at least 3 concepts")
+            candidate_directions = {
+                (str(item.get("meme_mechanism") or "").strip(), str(item.get("visual_hook") or "").strip())
+                for item in valid_candidates
+            }
+            if len(candidate_directions) != len(valid_candidates):
+                errors.append(f"{index} tournament concepts need materially different mechanism/hook pairs")
+
+        review = sticker.get("creative_review")
+        if not isinstance(review, dict):
+            review = {}
+            errors.append(f"{index} creative_review must be an object")
+        weighted_score = 0
+        score_valid = True
+        for field, weight in CREATIVE_SCORE_WEIGHTS.items():
+            value = review.get(field)
+            if not isinstance(value, int) or isinstance(value, bool) or not 1 <= value <= 5:
+                errors.append(f"{index} creative_review.{field} must be an integer from 1 to 5")
+                score_valid = False
+                continue
+            weighted_score += value * weight
+        if not is_present(review.get("rationale")):
+            errors.append(f"{index} creative_review.rationale is required")
+        thresholds_ok = score_valid and all(
+            (
+                weighted_score >= CREATIVE_MIN_WEIGHTED_SCORE,
+                int(review.get("context_fit", 0)) >= 4,
+                int(review.get("sendability", 0)) >= 4,
+                int(review.get("persona_fit", 0)) >= 3,
+                int(review.get("social_safety", 0)) >= 3,
+            )
+        )
+        if score_valid and not thresholds_ok:
+            errors.append(f"{index} creative score does not meet production thresholds")
+        results.append({"index": index, "portfolio_role": role, "weighted_score": weighted_score, "ok": thresholds_ok})
+
+        signature = "|".join(
+            str(sticker.get(field) or "").strip().lower()
+            for field in ("trigger_utterance", "surface_message", "social_move")
+        )
+        if signature in signatures:
+            errors.append(f"{index} duplicates the social scenario signature of {signatures[signature]}")
+        elif signature.strip("|"):
+            signatures[signature] = index
+
+    for role, actual in role_counts.items():
+        expected = int(portfolio.get(role, 0) or 0)
+        if actual != expected:
+            errors.append(f"portfolio role {role} has {actual} stickers, expected {expected}")
+    if count > 1:
+        anchor_roles = {role for _index, role in anchors}
+        if len(anchors) < 2:
+            errors.append("album needs at least two concept_tournament_anchor stickers")
+        if "utility" not in anchor_roles:
+            errors.append("concept tournament needs a utility anchor")
+        if not anchor_roles.intersection({"persona", "wildcard"}):
+            errors.append("concept tournament needs a persona or wildcard anchor")
+    if count > 1 and len(signatures) == count:
+        warnings.append("exact social-scenario signatures are unique; still inspect semantic overlap manually")
+
+    return {
+        "ok": not errors,
+        "framework": "first_principles_sendability_v1",
+        "thresholds": {
+            "weighted_score": CREATIVE_MIN_WEIGHTED_SCORE,
+            "context_fit": 4,
+            "sendability": 4,
+            "persona_fit": 3,
+            "social_safety": 3,
+        },
+        "errors": errors,
+        "warnings": warnings,
+        "stickers": results,
+    }
+
+
 def build_video_prompt(plan: dict[str, Any], sticker: dict[str, Any]) -> str:
     theme = plan.get("theme", "")
     character = plan.get("character", "")
@@ -217,17 +410,35 @@ def build_video_prompt(plan: dict[str, Any], sticker: dict[str, Any]) -> str:
     text = sticker.get("text") or sticker.get("copy") or ""
     mode = plan.get("animated_source_mode", "green_screen_video")
     background = "pure flat #00FF00 green screen background" if mode == "green_screen_video" else "stable theme-related designed background"
+    direction = plan.get("creative_direction") if isinstance(plan.get("creative_direction"), dict) else {}
+    persona = direction.get("persona") if isinstance(direction.get("persona"), dict) else {}
     lines = [
         "Fixed camera, fixed framing, stable character identity, stable subject scale.",
         "No audio, no watermark, no scene cuts, no text morphing, no camera zoom.",
+        f"Target audience: {direction.get('target_audience', '')}",
+        f"Relationship context: {direction.get('relationship_context', '')}",
+        f"Conversation register: {direction.get('conversation_register', '')}",
+        f"Persona core: {persona.get('core', '')}",
+        f"Persona worldview: {persona.get('worldview', '')}",
+        f"Persona social posture: {persona.get('social_posture', '')}",
+        f"Persona signature reaction: {persona.get('signature_reaction', '')}",
+        f"Persona visual hook: {persona.get('visual_hook', '')}",
         f"Character: {character}",
         f"Theme: {theme}",
+        f"Trigger utterance or event: {sticker.get('trigger_utterance', '')}",
+        f"Surface message: {sticker.get('surface_message', '')}",
+        f"Hidden emotion: {sticker.get('hidden_emotion', '')}",
+        f"Social move: {sticker.get('social_move', '')}",
+        f"Meme mechanism: {sticker.get('meme_mechanism', '')}",
+        f"Visual hook: {sticker.get('visual_hook', '')}",
+        f"Punchline frame: {sticker.get('punchline_frame', '')}",
         f"Sticker action: {action}",
         f"Locked visible text/caption if present: {text}",
         f"Background policy: {background}.",
-        "Create a loop-friendly motion whose final pose returns naturally toward the first frame.",
+        "Make the action reveal the relationship between the surface message and hidden emotion.",
+        "Create a loop-friendly motion whose final pose returns naturally toward the first frame and whose punchline remains readable as a still.",
     ]
-    return "\n".join(line for line in lines if line.strip())
+    return "\n".join(line for line in lines if line.split(":", 1)[-1].strip())
 
 
 def command_text(command: list[str]) -> str:
@@ -300,6 +511,7 @@ def cmd_init(args: argparse.Namespace) -> None:
         raise SystemExit(f"Plan already exists: {plan_path}")
 
     stickers = []
+    roles = portfolio_roles(args.count)
     for i in range(1, args.count + 1):
         index = f"{i:02d}"
         stickers.append(
@@ -309,6 +521,29 @@ def cmd_init(args: argparse.Namespace) -> None:
                 "text": "",
                 "meaning": "",
                 "action": "",
+                "portfolio_role": roles[i - 1],
+                "trigger_utterance": "",
+                "surface_message": "",
+                "hidden_emotion": "",
+                "social_move": "",
+                "meme_mechanism": "",
+                "visual_hook": "",
+                "punchline_frame": "",
+                "use_case": "",
+                "concept_tournament_anchor": False,
+                "concept_candidates": [],
+                "selected_concept_id": "",
+                "selection_reason": "",
+                "creative_review": {
+                    "context_fit": None,
+                    "emotional_precision": None,
+                    "persona_fit": None,
+                    "visual_hook": None,
+                    "surprise": None,
+                    "sendability": None,
+                    "social_safety": None,
+                    "rationale": "",
+                },
                 "motion_profile": "controlled_full_body" if args.motion == "animated" else "static",
                 "start_frame_source_path": str((out_dir / "start_frames" / f"{index}.png").resolve()),
                 "end_frame_source_path": str((out_dir / "end_frames" / f"{index}.png").resolve()),
@@ -317,11 +552,11 @@ def cmd_init(args: argparse.Namespace) -> None:
         )
 
     plan = {
-        "version": 1,
+        "version": 2,
         "pack_name": args.pack_name,
         "slug": args.slug or out_dir.name,
         "output_dir": str(out_dir),
-        "pack_type": "album",
+        "pack_type": "single" if args.count == 1 else "album",
         "count": args.count,
         "motion": args.motion,
         "animated_source_mode": args.animated_source_mode if args.motion == "animated" else None,
@@ -334,7 +569,21 @@ def cmd_init(args: argparse.Namespace) -> None:
         "video_sample_count": args.video_sample_count,
         "theme": args.theme,
         "character": args.character,
-        "status": "planning",
+        "creative_direction": {
+            "target_audience": args.target_audience,
+            "relationship_context": args.relationship_context,
+            "conversation_register": args.conversation_register,
+            "persona": {
+                "core": "",
+                "worldview": "",
+                "social_posture": "",
+                "signature_reaction": "",
+                "verbal_fingerprint": [],
+                "visual_hook": "",
+            },
+            "portfolio": default_portfolio(args.count),
+        },
+        "status": "creative_planning",
         "stickers": stickers,
         "assets": {
             "cover": {},
@@ -403,6 +652,9 @@ def cmd_validate(args: argparse.Namespace) -> None:
     restricted = contains_restricted_text(plan)
     if restricted:
         errors.append("restricted visual-policy text found: " + ", ".join(sorted(set(restricted))))
+    if args.require_creative:
+        creative_report = creative_plan_report(plan)
+        errors.extend(f"creative: {message}" for message in creative_report["errors"])
     if args.require_keyframes:
         for index, sticker in sticker_map(plan).items():
             start = sticker_path(sticker, "start_frame_source_path", default_path(out_dir, "start_frames", index, ".png"))
@@ -415,6 +667,31 @@ def cmd_validate(args: argparse.Namespace) -> None:
         print(json.dumps({"ok": False, "errors": errors}, ensure_ascii=False, indent=2))
         raise SystemExit(1)
     print(json.dumps({"ok": True, "output_dir": str(out_dir), "count": count, "motion": motion}, ensure_ascii=False))
+
+
+def cmd_creative_qc(args: argparse.Namespace) -> None:
+    plan, _state, out_dir, _state_path = load_plan_and_state(args.plan, args.state)
+    report = creative_plan_report(plan)
+    report_path = out_dir / args.report_name
+    write_json(report_path, report)
+    if args.verbose:
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+    else:
+        failed = [item["index"] for item in report["stickers"] if not item["ok"]]
+        print(
+            json.dumps(
+                {
+                    "ok": report["ok"],
+                    "report": str(report_path.resolve()),
+                    "error_count": len(report["errors"]),
+                    "failed_stickers": failed[:8],
+                    "first_errors": report["errors"][:8],
+                },
+                ensure_ascii=False,
+            )
+        )
+    if not report["ok"]:
+        raise SystemExit(1)
 
 
 def submit_one(
@@ -484,6 +761,14 @@ def cmd_submit_videos(args: argparse.Namespace) -> None:
         raise SystemExit("submit-videos only supports animated video modes")
     if not args.dry_run and not os.environ.get("ARK_API_KEY"):
         raise SystemExit("ARK_API_KEY missing")
+    if int(plan.get("version", 1)) >= 2:
+        creative_report = creative_plan_report(plan)
+        write_json(out_dir / "creative-qc.json", creative_report)
+        if not creative_report["ok"]:
+            raise SystemExit(
+                "creative QC failed before video submission: "
+                + "; ".join(creative_report["errors"][:5])
+            )
     ensure_dirs(out_dir)
     stickers = sticker_map(plan)
     indices = parse_indices(args.indices, plan)
@@ -656,6 +941,9 @@ def build_parser() -> argparse.ArgumentParser:
     init.add_argument("--video-sample-count", type=int, default=36)
     init.add_argument("--theme", default="")
     init.add_argument("--character", default="")
+    init.add_argument("--target-audience", default="")
+    init.add_argument("--relationship-context", default="")
+    init.add_argument("--conversation-register", default="")
     init.add_argument("--force", action="store_true")
     init.set_defaults(func=cmd_init)
 
@@ -664,7 +952,15 @@ def build_parser() -> argparse.ArgumentParser:
     validate.add_argument("--state", type=Path)
     validate.add_argument("--require-keyframes", action="store_true")
     validate.add_argument("--require-secrets", action="store_true")
+    validate.add_argument("--require-creative", action="store_true")
     validate.set_defaults(func=cmd_validate)
+
+    creative_qc = subparsers.add_parser("creative-qc", help="Validate first-principles sendability, persona, portfolio, and concept review fields.")
+    creative_qc.add_argument("--plan", required=True, type=Path)
+    creative_qc.add_argument("--state", type=Path)
+    creative_qc.add_argument("--report-name", default="creative-qc.json")
+    creative_qc.add_argument("--verbose", action="store_true")
+    creative_qc.set_defaults(func=cmd_creative_qc)
 
     submit = subparsers.add_parser("submit-videos", help="Submit first/last-frame Seedance tasks with bounded concurrency.")
     submit.add_argument("--plan", required=True, type=Path)

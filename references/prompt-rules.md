@@ -38,6 +38,26 @@ If a Seedance video candidate is generated but the visual result fails, do not s
 
 For text stickers, prefer visual expression over text. If exact Chinese text readability is critical, either generate finished integrated text in the image model or use the approved static text composite workflow. Never silently replace image-generated sticker design with a cheap local caption; the local text layer must be deliberate, integrated, manifest-recorded, and QC-checked.
 
+## Social-Intent Prompt Inputs
+
+Read `net-sense-framework.md` and pass creative QC before writing production prompts. Do not translate a generic emotion label directly into art.
+
+Every production prompt should inherit these approved fields:
+
+- `target_audience`, `relationship_context`, and `conversation_register` from `creative_direction`.
+- Persona core, worldview, social posture, signature reaction, and visual hook.
+- `trigger_utterance`: the line or event immediately before the sticker is sent.
+- `surface_message`: the apparent message.
+- `hidden_emotion`: the emotional subtext.
+- `social_move`: the relationship action the sender performs.
+- `meme_mechanism`: the contrast, reversal, escalation, understatement, literalization, or other memory mechanism.
+- `visual_hook`: the first visual beat readable at phone size.
+- `punchline_frame`: the strongest still or animation beat.
+
+Make the action express the relationship between surface message and hidden emotion. Do not merely list both. For example, polite agreement plus internal collapse should become a controlled nod followed by a delayed physical flattening, not a neutral nod with a caption.
+
+Keep trend language optional and replaceable. When a concept depends on a current signal, retain the durable social situation in the prompt and keep the trend metadata out of the character identity.
+
 ## Main Sticker Prompt Rules
 
 Always specify:

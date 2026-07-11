@@ -1,6 +1,6 @@
 ---
 name: wechat-stickers
-description: "Generate, postprocess, and package WeChat sticker packs from character or theme prompts. Use when Codex needs to create WeChat sticker album assets, single sticker assets, animated GIF stickers, static stickers, thumbnails, cover image, chat panel icon, detail banner, reward guide image, reward thanks image, meaning keywords, submission metadata, or QC reports for WeChat Sticker Open Platform style delivery."
+description: "Plan, generate, postprocess, and package socially usable, meme-aware WeChat sticker packs from character or theme prompts. Use when Codex needs to design sticker personas and chat scenarios, select high-sendability concepts, create animated or static stickers, make album assets, or produce WeChat Sticker Open Platform metadata, QC reports, and delivery packages."
 ---
 
 # WeChat Stickers
@@ -11,28 +11,50 @@ For game sprites, animation sheets, RPG units, projectiles, or combat effects, u
 
 ## Workflow
 
+### First-Principles Creative Gate
+
+A sticker is a low-friction social action, not merely a cute illustration. Optimize for a concrete sending moment:
+
+`sendability = context fit x emotional precision x persona fit x visual recognition x surprise / social risk`
+
+Before image generation, Seedance submission, style locking, or batch production:
+
+1. Read [references/net-sense-framework.md](references/net-sense-framework.md).
+2. Define `creative_direction`: target audience, relationship context, conversation register, and a behavioral persona with worldview, social posture, signature reaction, verbal fingerprint, and visual hook.
+3. Plan each sticker with `trigger_utterance`, `surface_message`, `hidden_emotion`, `social_move`, `meme_mechanism`, `visual_hook`, `punchline_frame`, `use_case`, and `portfolio_role`.
+4. Build a portfolio instead of a flat emotion list. Default mixes are `4/3/1` for 8, `8/5/3` for 16, and `12/8/4` for 24 across utility/persona/wildcard.
+5. Run a text-only concept tournament for at least two anchor scenarios: one utility and one persona/wildcard. Create at least three materially different concepts for each anchor before spending image or video calls.
+6. Record `concept_candidates`, `selected_concept_id`, `selection_reason`, and `creative_review` scores. Run `scripts/run_wechat_sticker_pipeline.py creative-qc --plan <plan>`.
+7. Do not lock the pack from one generic pilot. Lock character and style only after both a utility pilot and a persona/wildcard pilot pass creative review and visual review.
+
+Creative QC and technical QC are separate gates. A technically clean sticker with no specific use case, no character-specific behavior, or no sendable social move must be rewritten before production.
+
+For trend-dependent concepts, record `trend_signal`, `observed_at`, `source_context`, and `trend_ttl_days`. Preserve the durable social situation underneath the trend and reject copied meme artwork, copyrighted characters, celebrity likenesses, platform UI, or another pack's signature composition.
+
 ### Production Pipeline Contract
 
 For real 8/16/24-pack production, especially animated albums, use a plan/state driven pipeline instead of ad hoc long-thread orchestration.
 
-- Before generating paid or batch assets, create or update `sticker-plan.json` in the job output directory. This file is the source of truth for `pack_name`, `slug`, `count`, `motion`, `animated_source_mode`, `video_input_mode`, `video_model`, `theme`, `character`, sticker list, copy, meanings, start/end frame paths, video prompt paths, and album asset source paths.
+- Before generating paid or batch assets, create or update `sticker-plan.json` in the job output directory. This file is the source of truth for `pack_name`, `slug`, `count`, `motion`, `creative_direction`, portfolio mix, social-scenario fields, concept selections, creative scores, animation mode, character, sticker list, copy, meanings, start/end frame paths, video prompt paths, and album asset source paths.
 - Also create `run-state.json` in the same job output directory. It tracks each sticker's current stage: planned, keyframes_ready, video_submitted/running, video_done, gif_done, qc_done, failed. Do not rely on chat memory, folder mtime, `find | head`, or old manifests to decide what to process next.
 - Use `scripts/run_wechat_sticker_pipeline.py init` to create the output skeleton, starter plan, and state file. Use its later subcommands for deterministic stages whenever the needed source files already exist.
 - For animated Seedance runs, the standard deterministic path is:
   1. `init`
-  2. generate 1-2 pilot start/end frames with `image_gen`
-  3. write those paths into `sticker-plan.json`
-  4. `validate --require-secrets`
-  5. `submit-videos` for the pilot
-  6. `process-videos` for the pilot
-  7. visually review pilot MP4/GIF/contact sheet
-  8. generate remaining start/end frames
-  9. batch `submit-videos` with bounded concurrency
-  10. `process-videos`
-  11. generate cover/icon/banner/reward assets
-  12. `make-preview`
-  13. `qc`
-  14. `package` only after the intended QC level is clear
+  2. fill creative direction, portfolio, scenarios, concept candidates, and scores
+  3. `creative-qc`
+  4. generate utility plus persona/wildcard pilot start/end frames with `image_gen`
+  5. write those paths into `sticker-plan.json`
+  6. `validate --require-creative --require-secrets`
+  7. `submit-videos` for the pilots
+  8. `process-videos` for the pilots
+  9. visually review pilot MP4/GIF/contact sheet and lock the winning direction
+  10. generate remaining start/end frames
+  11. batch `submit-videos` with bounded concurrency
+  12. `process-videos`
+  13. generate cover/icon/banner/reward assets
+  14. `make-preview`
+  15. `qc`
+  16. `package` only after the intended QC level is clear
 - The pipeline may not silently switch an animated run from Seedance video to sprite-sheet, still-loop, local transform, or old project artifacts. If Seedance is unavailable, stop and record the blocker.
 - Time, token cost, API cost, or desire to finish in the current turn is not approval to downgrade. If the selected animated mode is Seedance video and the estimated run is expensive or slow, stop after `init` or the pilot plan and ask the user whether to continue, reduce count, switch to static, or explicitly accept a lower-quality preview. Do not decide this alone.
 - Do not write pack-specific local composite generators such as `make_<pack>_pack.py` that extract the user reference image, paste text, and create final `main/` stickers. A pack-specific script may only organize plan/state files or call shared skill scripts; it may not create creative sticker art.
@@ -79,9 +101,10 @@ For real 8/16/24-pack production, especially animated albums, use a plan/state d
    - Do not mention, plan, or begin `4x4`, `16 frames`, `sprite_sheet`, `wide strip`, `grid`, or sheet-processing commands in a new animated request until one of these is true: the user explicitly requested sprite sheets; `ARK_API_KEY` or Seedance access is unavailable and the user approved fallback; or a video-mode production attempt failed and the user approved sprite fallback.
 
 2. Read only the needed references:
+   - Read [references/net-sense-framework.md](references/net-sense-framework.md) before choosing scenarios, writing a persona, or approving concepts.
    - Read [references/wechat-spec.md](references/wechat-spec.md) before packaging or QC.
    - Read [references/prompt-rules.md](references/prompt-rules.md) before writing image prompts.
-   - Read [references/emotion-presets.md](references/emotion-presets.md) when the user did not provide a full sticker list.
+   - Read [references/emotion-presets.md](references/emotion-presets.md) when the user did not provide a full sticker list; convert presets into complete social scenarios rather than copying emotion labels.
    - Keep context lean: use `rg`, targeted `sed`, or section-specific reads. Do not dump the full skill, full prompt rules, full script help, full inspect JSON, or full QC report into the conversation unless debugging that exact file format.
 
 ### Token-Efficient Mode
@@ -126,6 +149,7 @@ Use expansion mode when growing an existing 8-pack into 16 or 24 stickers.
 - For batch Seedance jobs, cap active long-running tasks to a manageable group, usually 4-8 at a time, unless the API quota and local polling are known to handle more. Record each task id/report path before starting the next batch.
 
 3. Write a pack manifest:
+   - Copy the approved `creative_direction`, portfolio plan, social-scenario fields, selected concept ids, selection reasons, and creative scores from `sticker-plan.json` into `manifest.json` so the creative decision remains auditable.
    - Use 8, 16, or 24 distinct chat scenarios for an album.
    - Keep the same character and style across all main stickers.
    - Assign each sticker a short meaning keyword.
@@ -521,6 +545,13 @@ For video-mode animated stickers, the main sticker record should look like this 
 Reject these workflows even if they produce files that pass dimension QC:
 
 - One `image_gen` concept board is generated, then ignored.
+- A pack skips the creative gate and begins generation from generic emotion labels such as happy, tired, shocked, or cute.
+- A clean utility pilot locks the whole style before a persona or wildcard pilot proves that the character has distinctive behavior.
+- A concept has no concrete `trigger_utterance`, no relationship context, or no plausible `use_case`.
+- The caption is the whole joke; replacing the character with any cute animal would preserve the concept.
+- Several stickers use the same social move, timing, and pose with only different wording.
+- A trend phrase or copied meme composition is treated as the character identity instead of a temporary surface signal.
+- Creative review scores are inflated to admit a favorite drawing even though context fit, sendability, persona fit, or social safety is below threshold.
 - One good generated example is shown, then production is built from the user reference image cutout plus local text.
 - A new animated sticker request defaults to 4x4 sprite-sheet generation even though Seedance video mode is available.
 - A new animated sticker request reads an old `preview_not_submission_ready` sprite project, old manifest, or old sprite prompt and then proposes `4x4`, `16 frames`, or sheet processing before completing the Seedance mode-lock preflight.
